@@ -1,4 +1,6 @@
 import numpy as np
+import sys
+sys.path.append(r"D:\\PycharmProjects\\pythonProject\\Time-series-classification-and-clustering-with-Reservoir-Computing")
 from sklearn.preprocessing import OneHotEncoder
 from reservoir_computing.modules import RC_model
 from reservoir_computing.utils import compute_test_scores
@@ -15,10 +17,10 @@ Ytr = onehot_encoder.fit_transform(Ytr)
 Yte = onehot_encoder.transform(Yte)
 
 # Initialize, train and evaluate the RC model 
-classifier =  RC_model(n_internal_units=500)
+classifier = RC_model(n_internal_units=500)
 
 # Train the model
-tr_time = classifier.fit(Xtr, Ytr) 
+tr_time = classifier.fit(Xtr, Ytr)
 
 # Compute predictions on test data
 pred_class = classifier.predict(Xte) 

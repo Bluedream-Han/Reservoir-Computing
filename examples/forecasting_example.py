@@ -1,5 +1,7 @@
 import numpy as np
+import sys
 from sklearn.metrics import mean_squared_error
+sys.path.append(r"D:\\PycharmProjects\\pythonProject\\Time-series-classification-and-clustering-with-Reservoir-Computing")
 from reservoir_computing.modules import RC_forecaster
 from reservoir_computing.utils import make_forecasting_dataset
 from reservoir_computing.datasets import PredLoader
@@ -7,7 +9,7 @@ from reservoir_computing.datasets import PredLoader
 np.random.seed(0) # For reproducibility
 
 # Load the dataset
-ts_full = PredLoader().get_data('ElecRome')
+ts_full = PredLoader().get_data('UWAVE')
 
 # Resample the time series to hourly frequency
 ts_hourly = np.mean(ts_full.reshape(-1, 6), axis=1)

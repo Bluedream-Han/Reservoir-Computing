@@ -27,6 +27,8 @@ class ClfLoader:
             'Chlorine': ('https://zenodo.org/records/10840284/files/CHLO.npz?download=1', 'Univariate time series classification.\nSamples: 4307 (467 training, 3840 test)\nFeatures: 1\nClasses: 3\nTime series length: 166'), 
             'Phalanx': ('https://zenodo.org/records/10852613/files/PHAL.npz?download=1', 'Univariate time series classification.\nSamples: 539 (400 training, 139 test)\nFeatures: 1\nClasses: 3\nTime series length: 80'),
             'SwedishLeaf': ('https://zenodo.org/records/10840000/files/SwedishLeaf.npz?download=1', 'Univariate time series classification.\nSamples: 1125 (500 training, 625 test)\nFeatures: 1\nClasses: 15\nTime series length: 128'),
+            'UCI_HAR': ("https://archive.ics.uci.edu/ml/machine-learning-databases/00240/UCI%20HAR%20Dataset.zip", 
+                        'Multivariate time series classification for Human Activity Recognition using smartphones.\nSamples: 10299 (7352 training, 2947 test)\nFeatures: 561\nClasses: 6\nTime series length: variable'),
         }
 
     def available_datasets(self, details=False):
@@ -49,7 +51,7 @@ class ClfLoader:
             else:
                 print(alias)
 
-    def get_data(self, alias):
+    def get_data(self, alias, **kwargs):
         r"""
         Download and load the dataset.
 
@@ -57,6 +59,8 @@ class ClfLoader:
         -----------
         alias : str
             The alias of the dataset to be downloaded.
+        kwargs : dict
+            Additional parameters for the dataset.
 
         Returns:
         --------
@@ -92,10 +96,44 @@ class ClfLoader:
                 warnings.warn(f"Number of classes in training and test sets do not match for {alias} dataset.")
             print(f"Loaded {alias} dataset.\nNumber of classes: {n_classes_tr}\nData shapes:\n  Xtr: {Xtr.shape}\n  Ytr: {Ytr.shape}\n  Xte: {Xte.shape}\n  Yte: {Yte.shape}")
 
+            # Special case for UCI_HAR dataset
+            if alias == 'UCI_HAR':
+                return self._get_uci_har_data(**kwargs)
+
             return (Xtr, Ytr, Xte, Yte)
         else:
             print(f"Failed to download {alias} dataset.")
             return None
+
+    def _get_uci_har_data(self, data_path='./data', subset='all', sensor_type='all', 
+                          polynomial_degree=None, normalize=True, 
+                          dynamic_only=False, non_dynamic_only=False):
+        """
+        Load and preprocess the UCI HAR dataset.
+        
+        Parameters:
+        -----------
+        data_path : str
+            Path to store the downloaded data
+        subset : str
+            'all', 'train', or 'test' to specify which subset to return
+        sensor_type : str
+            'all', 'acc', or 'gyro' to specify which sensor data to use
+        polynomial_degree : list or None
+            List of polynomial degrees to include (e.g., [1, 2] for linear and quadratic)
+        normalize : bool
+            Whether to normalize features
+        dynamic_only : bool
+            If True, return only dynamic activities (walking, upstairs, downstairs)
+        non_dynamic_only : bool
+            If True, return only non-dynamic activities (sitting, standing, laying)
+        
+        Returns:
+        --------
+        tuple
+            (X_train, y_train, X_test, y_test) or subset based on 'subset' parameter
+        """
+        # 完整方法实现...
 
 
 class PredLoader():

@@ -2,12 +2,100 @@ import numpy as np
 import time
 from sklearn.linear_model import Ridge
 from sklearn.decomposition import PCA
+from sklearn.linear_model import LinearRegression
 from sklearn.svm import SVC
-from sklearn.neural_network import MLPClassifier
 from scipy.spatial.distance import pdist, cdist, squareform
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from sklearn.neural_network import MLPClassifier
 
 from .reservoir import Reservoir
 from .tensorPCA import tensorPCA
+
+class CustomMLPClassifier:
+    def __init__(self, hidden_layer_sizes=(100,), activation='relu', alpha=0.0001, batch_size=32,
+                 learning_rate='constant', learning_rate_init=0.001, max_iter=200, shuffle=True,
+                 random_state=42, dropout_rate=0.2):
+        self.hidden_layer_sizes = hidden_layer_sizes
+        self.activation = activation
+        self.alpha = alpha
+        self.batch_size = batch_size
+        self.learning_rate = learning_rate
+        self.learning_rate_init = learning_rate_init
+        self.max_iter = max_iter
+        self.shuffle = shuffle
+        self.random_state = random_state
+        self.dropout_rate = dropout_rate
+        
+        # 设置设备
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        
+        # 初始化模型
+        self.model = None
+        self.optimizer = None
+        self.criterion = nn.CrossEntropyLoss()
+        
+    def _build_model(self, input_size, output_size):
+        layers = []
+        prev_size = input_size
+        
+        # 添加隐藏层
+        for hidden_size in self.hidden_layer_sizes:
+            layers.append(nn.Linear(prev_size, hidden_size))
+            layers.append(nn.ReLU())
+            layers.append(nn.Dropout(self.dropout_rate))
+            prev_size = hidden_size
+        
+        # 添加输出层
+        layers.append(nn.Linear(prev_size, output_size))
+        
+        return nn.Sequential(*layers)
+    
+    def fit(self, X, y):
+        X = torch.FloatTensor(X).to(self.device)
+        y = torch.LongTensor(np.argmax(y, axis=1)).to(self.device)
+        
+        # 构建模型
+        input_size = X.shape[1]
+        output_size = y.max().item() + 1
+        self.model = self._build_model(input_size, output_size).to(self.device)
+        
+        # 设置优化器
+        self.optimizer = optim.Adam(self.model.parameters(), lr=self.learning_rate_init, weight_decay=self.alpha)
+        
+        # 训练模式
+        self.model.train()
+        
+        for epoch in range(self.max_iter):
+            if self.shuffle:
+                indices = torch.randperm(len(X))
+                X = X[indices]
+                y = y[indices]
+            
+            for i in range(0, len(X), self.batch_size):
+                batch_X = X[i:i+self.batch_size]
+                batch_y = y[i:i+self.batch_size]
+                
+                self.optimizer.zero_grad()
+                outputs = self.model(batch_X)
+                loss = self.criterion(outputs, batch_y)
+                loss.backward()
+                self.optimizer.step()
+    
+    def predict(self, X):
+        X = torch.FloatTensor(X).to(self.device)
+        self.model.eval()  # 评估模式
+        with torch.no_grad():
+            outputs = self.model(X)
+            return outputs.cpu().numpy()
+    
+    def predict_proba(self, X):
+        X = torch.FloatTensor(X).to(self.device)
+        self.model.eval()  # 评估模式
+        with torch.no_grad():
+            outputs = self.model(X)
+            return torch.softmax(outputs, dim=1).cpu().numpy()
 
             
 class RC_model(object):
@@ -58,10 +146,12 @@ class RC_model(object):
     
     **Representation parameters:**
     
-    :param mts_rep: str (default ``None``) 
+    :param mts_rep: str (default ``'concat'``) 
         Type of MTS representation. 
         It can be ``'last'`` (last state), ``'mean'`` (mean of all the states),
-        ``'output'`` (output model space), or ``'reservoir'`` (reservoir model space).
+        ``'output'`` (output model space), ``'reservoir'`` (reservoir model space), 
+        ``'ols'`` (ordinary least squares model space), or
+        ``'concat'`` (flattened concatenation of all time steps and features).
     :param w_ridge_embedding: float (default ``1.0``) 
         Regularization parameter of the ridge regression in the output model space 
         and reservoir model space representation; ignored if ``mts_rep == None``.
@@ -95,6 +185,8 @@ class RC_model(object):
     :param svm_C: float (default ``1.0``) 
         Regularization for SVM hyperplane.
         Used only when ``readout_type=='svm'``.
+    :param dropout_rate: float (default ``0.2``)
+        Dropout rate for the MLP readout.
     """
     
     def __init__(self,
@@ -102,7 +194,7 @@ class RC_model(object):
               reservoir=None,     
               n_internal_units=100,
               spectral_radius=0.99,
-              leak=None,
+              leak=0.9,  # 可以是float或list类型，例如[0.3, 0.5, 0.4]
               connectivity=0.3,
               input_scaling=0.2,
               noise_level=0.0,
@@ -113,17 +205,19 @@ class RC_model(object):
               dimred_method=None, 
               n_dim=None,
               # representation
-              mts_rep='mean',
+              mts_rep='concat',
               w_ridge_embedding=1.0,
               # readout
-              readout_type='lin',               
+              readout_type='mlp',               
               w_ridge=1.0,              
-              mlp_layout=None,
-              num_epochs=None,
-              w_l2=None,
-              nonlinearity=None, 
+              mlp_layout=(100,),
+              num_epochs=200,
+              w_l2=0.1,
+              nonlinearity='relu', 
               svm_gamma=1.0,
-              svm_C=1.0):
+              svm_C=1.0,
+              dropout_rate=0.2,
+              multi_timescale = False):
 
         self.n_drop=n_drop
         self.bidir=bidir
@@ -131,6 +225,8 @@ class RC_model(object):
         self.mts_rep=mts_rep
         self.readout_type=readout_type
         self.svm_gamma=svm_gamma
+        self.dropout_rate = dropout_rate
+        self.multi_timescale = multi_timescale
                         
         # Initialize reservoir
         if reservoir is None:
@@ -154,8 +250,9 @@ class RC_model(object):
                 raise RuntimeError('Invalid dimred method ID')
                 
         # Initialize ridge regression model
-        if mts_rep=='output' or mts_rep=='reservoir':
+        if mts_rep=='output' or mts_rep=='reservoir' or mts_rep=='ols':
             self._ridge_embedding = Ridge(alpha=w_ridge_embedding, fit_intercept=True)
+            self._ols_embedding = LinearRegression(fit_intercept=True)
                         
         # Initialize readout type            
         if self.readout_type is not None:
@@ -165,18 +262,21 @@ class RC_model(object):
             elif self.readout_type == 'svm': # SVM readout
                 self.readout = SVC(C=svm_C, kernel='precomputed')          
             elif readout_type == 'mlp': # MLP (deep readout)  
-                # pass
                 self.readout = MLPClassifier(
                     hidden_layer_sizes=mlp_layout, 
                     activation=nonlinearity, 
-                    alpha=w_l2,
-                    batch_size=32, 
-                    learning_rate='adaptive', # 'constant' or 'adaptive'
+                    alpha=w_l2,  # L2正则化系数
+                    batch_size=64, 
+                    learning_rate='adaptive',
                     learning_rate_init=0.001, 
                     max_iter=num_epochs, 
-                    early_stopping=False, # if True, set validation_fraction > 0
-                    validation_fraction=0.0 # used for early stopping
-                    )
+                    shuffle=True,
+                    random_state=42,
+                    early_stopping=True,  # 启用早停
+                    validation_fraction=0.1,  # 使用10%的数据作为验证集
+                    n_iter_no_change=10,  # 10轮无改善则停止
+                    tol=1e-4  # 早停的容忍度
+                )
             else:
                 raise RuntimeError('Invalid readout type')  
         
@@ -202,8 +302,16 @@ class RC_model(object):
                 
         time_start = time.time()
         
+        # 打印输入数据的形状
+        print(f"输入数据形状: X = {X.shape}")
+        
         # ============ Compute reservoir states ============ 
-        res_states = self._reservoir.get_states(X, n_drop=self.n_drop, bidir=self.bidir)
+        print('time scale is',self.multi_timescale)
+        res_states = self._reservoir.get_states(X, multi_timescale = self.multi_timescale, n_drop=self.n_drop, bidir=self.bidir)
+        
+        
+        # 打印储备池状态的形状
+        print(f"储备池状态形状: res_states = {res_states.shape}")
         
         # ============ Dimensionality reduction of the reservoir states ============  
         if self.dimred_method is not None:
@@ -217,8 +325,12 @@ class RC_model(object):
                 red_states = red_states.reshape(N_samples,-1,red_states.shape[1])          
             elif self.dimred_method.lower() == 'tenpca':
                 red_states = self._dim_red.fit_transform(res_states)       
+            
+            # 打印降维后的形状
+            print(f"降维后的形状: red_states = {red_states.shape}")
         else: # Skip dimensionality reduction
             red_states = res_states
+            print(f"未降维的形状: red_states = {red_states.shape}")
 
         # ============ Generate representation of the MTS ============
         coeff_tr = []
@@ -230,9 +342,10 @@ class RC_model(object):
                 X = np.concatenate((X,X[:, ::-1, :]),axis=2)                
                 
             for i in range(X.shape[0]):
-                self._ridge_embedding.fit(red_states[i, 0:-1, :], X[i, self.n_drop+1:, :])
-                coeff_tr.append(self._ridge_embedding.coef_.ravel())
-                biases_tr.append(self._ridge_embedding.intercept_.ravel())
+                # self._ridge_embedding.fit(red_states[i, 0:-1, :], X[i, self.n_drop+1:, :])
+                self._ols_embedding.fit(red_states[i, 0:-1, :], red_states[i, 1:, :])
+                coeff_tr.append(self._ols_embedding.coef_.ravel())
+                biases_tr.append(self._ols_embedding.intercept_.ravel())
             input_repr = np.concatenate((np.vstack(coeff_tr), np.vstack(biases_tr)), axis=1)
             
         # Reservoir model space representation
@@ -242,6 +355,14 @@ class RC_model(object):
                 coeff_tr.append(self._ridge_embedding.coef_.ravel())
                 biases_tr.append(self._ridge_embedding.intercept_.ravel())
             input_repr = np.concatenate((np.vstack(coeff_tr), np.vstack(biases_tr)), axis=1)
+            
+        # Ordinary Least Squares model space representation
+        elif self.mts_rep=='ols':
+            for i in range(X.shape[0]):
+                self._ols_embedding.fit(red_states[i, 0:-1, :], red_states[i, 1:, :])
+                coeff_tr.append(self._ols_embedding.coef_.ravel())
+                biases_tr.append(self._ols_embedding.intercept_.ravel())
+            input_repr = np.concatenate((np.vstack(coeff_tr), np.vstack(biases_tr)), axis=1)
         
         # Last state representation        
         elif self.mts_rep=='last':
@@ -250,6 +371,13 @@ class RC_model(object):
         # Mean state representation        
         elif self.mts_rep=='mean':
             input_repr = np.mean(red_states, axis=1)
+            
+        # Concatenate representation - flatten the time and features dimensions
+        elif self.mts_rep=='concat':
+            # 将形状从[N, T, F]转换为[N, T*F]
+            N, T, F = red_states.shape
+            input_repr = red_states.reshape(N, T*F)
+            print(f"拼接后的形状: input_repr = {input_repr.shape}, 从 {N}×{T}×{F} 重塑而来")
             
         else:
             raise RuntimeError('Invalid representation ID')            
@@ -269,7 +397,22 @@ class RC_model(object):
             
         elif self.readout_type == 'mlp': # MLP (deep readout)
             self.readout.fit(input_repr, Y)
-                        
+            # 计算训练集预测结果
+            train_pred = self.readout.predict(input_repr)
+            train_pred = np.argmax(train_pred, axis=1)
+            train_true = np.argmax(Y, axis=1)
+            
+            # 计算评估指标
+            from sklearn.metrics import accuracy_score, precision_recall_fscore_support
+            accuracy = accuracy_score(train_true, train_pred)
+            precision, recall, f1, _ = precision_recall_fscore_support(train_true, train_pred, average='weighted')
+            
+            print(f"\n训练集评估指标:")
+            print(f"准确率: {accuracy:.4f}")
+            print(f"精确率: {precision:.4f}")
+            print(f"召回率: {recall:.4f}")
+            print(f"F1分数: {f1:.4f}")
+            
         if verbose:
             tot_time = (time.time()-time_start)/60
             print(f"Training completed in {tot_time:.2f} min")
@@ -289,8 +432,14 @@ class RC_model(object):
             Array of shape ``[N]`` representing the predicted classes.
         """
 
+        # 打印测试数据的形状
+        print(f"测试数据形状: Xte = {Xte.shape}")
+
         # ============ Compute reservoir states ============
-        res_states_te = self._reservoir.get_states(Xte, n_drop=self.n_drop, bidir=self.bidir) 
+        res_states_te = self._reservoir.get_states(Xte, multi_timescale=self.multi_timescale,n_drop=self.n_drop, bidir=self.bidir) 
+        
+        # 打印测试储备池状态的形状
+        print(f"测试储备池状态形状: res_states_te = {res_states_te.shape}")
         
         # ============ Dimensionality reduction of the reservoir states ============ 
         if self.dimred_method is not None:
@@ -329,6 +478,14 @@ class RC_model(object):
                 coeff_te.append(self._ridge_embedding.coef_.ravel())
                 biases_te.append(self._ridge_embedding.intercept_.ravel())
             input_repr_te = np.concatenate((np.vstack(coeff_te), np.vstack(biases_te)), axis=1)
+            
+        # Ordinary Least Squares model space representation
+        elif self.mts_rep=='ols':    
+            for i in range(Xte.shape[0]):
+                self._ols_embedding.fit(red_states_te[i, 0:-1, :], red_states_te[i, 1:, :])
+                coeff_te.append(self._ols_embedding.coef_.ravel())
+                biases_te.append(self._ols_embedding.intercept_.ravel())
+            input_repr_te = np.concatenate((np.vstack(coeff_te), np.vstack(biases_te)), axis=1)
     
         # Last state representation        
         elif self.mts_rep=='last':
@@ -337,6 +494,13 @@ class RC_model(object):
         # Mean state representation        
         elif self.mts_rep=='mean':
             input_repr_te = np.mean(red_states_te, axis=1)
+            
+        # Concatenate representation - flatten the time and features dimensions
+        elif self.mts_rep=='concat':
+            # 将形状从[N, T, F]转换为[N, T*F]
+            N, T, F = red_states_te.shape
+            input_repr_te = red_states_te.reshape(N, T*F)
+            print(f"测试拼接后的形状: input_repr_te = {input_repr_te.shape}, 从 {N}×{T}×{F} 重塑而来")
             
         else:
             raise RuntimeError('Invalid representation ID')   
@@ -356,7 +520,34 @@ class RC_model(object):
             pred_class = np.argmax(pred_class, axis=1)
             
         return pred_class
-    
+
+    def save_weights(self, path):
+        """保存模型权重到指定路径
+        
+        Parameters:
+        -----------
+        path : str
+            保存权重的文件路径
+        """
+        if self.readout_type == 'mlp':
+            import joblib
+            joblib.dump(self.readout, path)
+        else:
+            raise RuntimeError('只有MLP类型的readout支持保存权重')
+
+    def load_weights(self, path):
+        """从指定路径加载模型权重
+        
+        Parameters:
+        -----------
+        path : str
+            权重文件的路径
+        """
+        if self.readout_type == 'mlp':
+            import joblib
+            self.readout = joblib.load(path)
+        else:
+            raise RuntimeError('只有MLP类型的readout支持加载权重')
 
 class RC_forecaster(object):
     r"""Class to perform time series forecasting with RC.
